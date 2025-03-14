@@ -1,0 +1,15 @@
+{
+    "patient_001": {
+        "diabetes": "180",
+        "blood_pressure": "120/90",
+        "age": "34",
+        "weight": "87 kg",
+        "spo2": "99",
+        "disease_risk": 1,
+        "previous_readings": {
+            "age": "25",
+            "weight": "75 Kg",
+            "spo2": "97"
+        }
+    }
+}
