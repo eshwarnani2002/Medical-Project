@@ -1,0 +1,26 @@
+Virtual environment is must for this project as there are multiple dependencies in this project.Virtual environment commands are as follows : 
+python -m venv venv (creating virtual env in WINDOWS) & venv\Scripts\activate (activating the virtual env in WINDOWS)
+python3 -m venv venv (creating virtual env in UBUNTU) & source venv/bin/activate (activating virtual env in UBUNTU)
+
+Choosing interpreter is the second step which can be done by the below command : 
+a)Press Ctrl+Shift+P and search for Python: Select Interpreter
+b)Choose the interpreter from your venv folder (it will look like .venv/bin/python or venv\Scripts\python.exe).
+
+
+The below commands are to be executed for the purpose of installing the necessary libraries : 
+
+pip install numpy
+pip install joblib
+pip install SpeechRecognition
+pip install scikit-learn
+pip install easyocr
+pip install matplotlib
+pip install fastapi
+pip install python-multipart
+pip install PyMuPDF
+
+
+
+ 
+
+ 
