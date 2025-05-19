@@ -14,6 +14,8 @@ from datetime import datetime
 from fastapi import FastAPI, Form, UploadFile, File, HTTPException
 from fastapi.responses import HTMLResponse
 import fitz
+import matplotlib.dates as mdates
+
 
 # ---------------- Utility Functions ----------------
 
@@ -51,21 +53,37 @@ def extract_text_from_file(file_path):
 
 def process_multiple_files(files):
     extracted_data = []
+    date_pattern = re.compile(r'\b(\d{4}-\d{2}-\d{2})\b')
+    hba1c_pattern = re.compile(r'HbA1c\s*[:\-]?\s*([\d\.]+)%?', re.IGNORECASE)
+    fbs_pattern = re.compile(r'FBS\s*[:\-]?\s*([\d\.]+)', re.IGNORECASE)
+    # Add other patterns as needed
+
     for file in files:
         temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1])
         temp_file.write(file.file.read())
         temp_file.close()
         text = extract_text_from_file(temp_file.name)
-        date_match = re.search(r'\b(\d{4}-\d{2}-\d{2})\b', text)
-        if date_match:
-            try:
-                date = datetime.strptime(date_match.group(1), "%Y-%m-%d")
-            except:
-                date = datetime.now()
-        else:
-            date = datetime.now()
-        extracted_data.append({"date": date, "text": text})
         os.remove(temp_file.name)
+
+        current_date = None
+        for line in text.splitlines():
+            date_match = date_pattern.search(line)
+            if date_match:
+                try:
+                    current_date = datetime.strptime(date_match.group(1), "%Y-%m-%d")
+                except:
+                    current_date = None
+            values = {}
+            hba1c_match = hba1c_pattern.search(line)
+            if hba1c_match:
+                values['HbA1c'] = hba1c_match.group(1)
+            fbs_match = fbs_pattern.search(line)
+            if fbs_match:
+                values['FBS'] = fbs_match.group(1)
+            # Add other value extractions as needed
+
+            if current_date and values:
+                extracted_data.append({"date": current_date, "text": line})
     extracted_data.sort(key=lambda x: x['date'])
     return extracted_data
 
@@ -115,7 +133,7 @@ def generate_diabetes_graph(data):
             plot_values.append(value)
     if plot_dates and plot_values:
         plt.plot(plot_dates, plot_values, marker='o', linestyle='-', color='b', label='Blood Glucose Level')
-        plt.axhline(y=140, color='r', linestyle='--', label='Threshold (140 mg/dL)')
+        plt.axhline(y=140, color='g', linestyle='--', label='Threshold (140 mg/dL)')
         plt.xlabel('Date')
         plt.ylabel('Blood Glucose Level (mg/dL)')
         plt.title('Diabetes Trend Over Time')
@@ -130,6 +148,144 @@ def generate_diabetes_graph(data):
                  transform=plt.gca().transAxes, fontsize=14)
         plt.axis('off')
     plt.tight_layout()
+
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+def generate_parameter_graph(data, parameter_type):
+    """
+    Generates a trend bar graph for the given parameter type.
+    Supports: 'diabetes', 'hba1c', 'blood_pressure', 'age'.
+    - 'age': bar graph showing counts of age >=1 and age 1-18 by year.
+    - others: bar graph of measurements over time with threshold line.
+    """
+    plt.figure(figsize=(10, 5))
+
+    # Special case: age counts (bar graph)
+    if parameter_type == 'age':
+        counts = {}
+        for entry in data:
+            year = entry['date'].year
+            params = extract_parameter_value(entry['text'], 'age')
+            if 'age' not in params:
+                continue
+            try:
+                age_val = int(params['age'])
+            except ValueError:
+                continue
+            counts.setdefault(year, {'1+': 0, '1-18': 0})
+            if age_val >= 1:
+                counts[year]['1+'] += 1
+            if 1 <= age_val <= 18:
+                counts[year]['1-18'] += 1
+
+        if not counts:
+            plt.text(0.5, 0.5, 'No valid age data found', ha='center', va='center', transform=plt.gca().transAxes)
+            plt.axis('off')
+        else:
+            years = sorted(counts)
+            labels = [f"{y}/{str(y+1)[-2:]}" for y in years]
+            series_all = [counts[y]['1+'] for y in years]
+            series_youth = [counts[y]['1-18'] for y in years]
+
+            x = np.arange(len(labels))
+            width = 0.35
+            plt.bar(x - width/2, series_all, width, color='b', label='Age 1+')
+            plt.bar(x + width/2, series_youth, width, color='r', label='Age 1 to 18')
+
+            plt.xlabel('Year')
+            plt.ylabel('Count')
+            plt.title('Age Distribution Over Time')
+            plt.legend()
+            plt.xticks(x, labels, rotation=45)
+            plt.tight_layout()
+        return
+
+    # Prepare data for bar graph (other parameters)
+    plot_dates = []
+    plot_values = []
+    for entry in data:
+        extracted = extract_parameter_value(entry['text'], parameter_type)
+        value = None
+        if parameter_type == 'diabetes':
+            for key in ['FBS', 'Blood Glucose', 'Blood Glucose mg/dL', 'HbA1c']:
+                if key in extracted:
+                    try:
+                        value = float(extracted[key])
+                        break
+                    except:
+                        continue
+        elif parameter_type == 'hba1c':
+            if 'HbA1c' in extracted:
+                try:
+                    value = float(extracted['HbA1c'])
+                except:
+                    pass
+        elif parameter_type == 'blood_pressure':
+            if 'Systolic' in extracted:
+                try:
+                    value = float(extracted['Systolic'])
+                except:
+                    pass
+        if value is not None:
+            plot_dates.append(entry['date'])
+            plot_values.append(value)
+
+    if plot_dates and plot_values:
+        # Draw bar graph instead of line graph
+        x = np.arange(len(plot_dates))
+        plt.bar(x, plot_values, color='skyblue', label=f'{parameter_type.replace("_"," ").title()} Level', alpha=0.8)
+
+        # Threshold line and labels
+        if parameter_type == 'diabetes':
+            threshold = 140
+            plt.axhline(threshold, linestyle='--', color='g', label='Threshold (140 mg/dL)')
+            ylabel = 'Blood Glucose (mg/dL)'
+        elif parameter_type == 'hba1c':
+            threshold = 6.5
+            plt.axhline(threshold, linestyle='--', color='g', label='Threshold (6.5%)')
+            ylabel = 'HbA1c (%)'
+        elif parameter_type == 'blood_pressure':
+            threshold = 140
+            plt.axhline(threshold, linestyle='--', color='g', label='Systolic Threshold (140 mmHg)')
+            ylabel = 'Blood Pressure (mmHg)'
+        else:
+            ylabel = parameter_type.replace('_',' ').title()
+
+        plt.xlabel('Date')
+        plt.ylabel(ylabel)
+        plt.title(f'{parameter_type.replace("_"," ").title()} Trend Over Time')
+        plt.legend()
+        date_labels = [d.strftime('%d-%b-%Y') for d in plot_dates]
+        plt.xticks(x, date_labels, rotation=45)
+        plt.tight_layout()
+    else:
+        plt.text(0.5, 0.5, f'No valid {parameter_type} data found', ha='center', va='center', transform=plt.gca().transAxes)
+        plt.axis('off')
+        plt.tight_layout()
+
+def extract_parameter_value(text, parameter_type):
+    patterns = {
+        "diabetes": {
+            "HbA1c": r"HbA1c\s*[:\-]?\s*([\d\.]+)%?",
+            "FBS": r"(?:FBS|fasting blood sugar)\s*[:\-]?\s*([\d\.]+)",
+            "Blood Glucose": r"(?:blood glucose|blood sugar)\s*[:\-]?\s*([\d\.]+)",
+            "Blood Glucose mg/dL": r"(?:blood glucose|blood sugar).*?([\d\.]+)\s*mg/dL"
+        },
+        "hba1c": {
+            "HbA1c": r"HbA1c\s*[:\-]?\s*([\d\.]+)%?"
+        },
+        "blood_pressure": {
+            "Systolic": r"(?:systolic|systolic blood pressure)\s*[:\-]?\s*([\d\.]+)",
+            "Diastolic": r"(?:diastolic|diastolic blood pressure)\s*[:\-]?\s*([\d\.]+)"
+        }
+    }
+    extracted_values = {}
+    if parameter_type in patterns:
+        for key, pattern in patterns[parameter_type].items():
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                extracted_values[key] = match.group(1)
+    return extracted_values
 
 # ---------------- Classes ----------------
 
@@ -319,8 +475,9 @@ async def read_form():
         <link href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css" rel="stylesheet">
         <style>
           body {
-              background: url("https://source.unsplash.com/1600x900/?medical,health") no-repeat center center fixed;
-              background-size: cover;
+              body {
+    background: url("https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=1600&q=80") no-repeat center center fixed;
+    background-size: cover;
           }
           .overlay {
               background-color: rgba(255, 255, 255, 0.95);
@@ -375,9 +532,27 @@ async def read_form():
                 <button type="submit" class="btn btn-primary">Upload Past Reports</button>
               </form>
             </div>
+            <!-- Section 3: View Specific Parameter Graph -->
+            <div class="card p-4">
+              <h3>View Trend Graph by Parameter</h3>
+              <form action="/show_graph" enctype="multipart/form-data" method="post">
+                <div class="form-group">
+                  <label>Enter parameter (e.g., Diabetes, HbA1c, Blood Pressure) or use voice command:</label>
+                  <textarea class="form-control" name="graph_command" rows="1" placeholder="E.g.: Show me the diabetes graph"></textarea>
+                </div>
+                <div class="form-group">
+                  <label>Upload multiple files for graph data (optional):</label>
+                  <input type="file" class="form-control-file" name="files" accept=".png,.jpg,.jpeg,.pdf" multiple>
+                </div>
+                <div class="form-group">
+                  <button type="button" class="btn btn-secondary" id="record-graph-btn">Record Voice Command for Graph</button>
+                </div>
+                <button type="submit" class="btn btn-info">Show Graph</button>
+              </form>
+            </div>
           </div>
           <div class="container text-center">
-            <a href="/view_diabetes_pattern/" class="btn btn-info">View Diabetes Pattern</a>
+            <a href="/view_diabetes_pattern/" class="btn btn-info">Show Trend Graphically</a>
           </div>
         </div>
         <script>
@@ -397,9 +572,32 @@ async def read_form():
             recognition.onerror = function(event) {
               console.error('Speech recognition error', event);
             };
+
+            // New listener for the graph command button
+            const graphRecognition = new SpeechRecognition();
+            graphRecognition.continuous = false;
+            graphRecognition.interimResults = false;
+            graphRecognition.lang = 'en-US';
+            document.getElementById('record-graph-btn').addEventListener('click', function() {
+                graphRecognition.start();
+            });
+            graphRecognition.onresult = function(event) {
+                const transcript = event.results[0][0].transcript;
+                document.getElementsByName('graph_command')[0].value = transcript;
+            };
+            graphRecognition.onerror = function(event) {
+                console.error('Speech recognition error', event);
+            };
+
           } else {
             document.getElementById('record-btn').disabled = true;
             document.getElementById('record-btn').innerText = 'Voice recording not supported';
+            // Disable the new button as well if not supported
+            const graphRecordBtn = document.getElementById('record-graph-btn');
+            if (graphRecordBtn) {
+                graphRecordBtn.disabled = true;
+                graphRecordBtn.innerText = 'Voice recording not supported';
+            }
           }
         </script>
       </body>
@@ -699,6 +897,66 @@ async def update_record(
               </table>
             </div>
     """
+    # Add graph generation based on voice command from the update section
+    graph_html = ""
+    if voice_transcript:
+        # Check for graph-related commands
+        graph_commands = {
+            "diabetes": ["diabetes", "blood sugar", "glucose"],
+            "hba1c": ["hba1c", "a1c", "glycated hemoglobin"],
+            "blood_pressure": ["blood pressure", "bp", "systolic", "diastolic"]
+        }
+
+        command_found = False
+        for param_type, keywords in graph_commands.items():
+            if any(keyword in voice_transcript.lower() for keyword in keywords):
+                try:
+                    with open("extracted_data.json", "r") as f:
+                        data = json.load(f)
+                    extracted_data = []
+                    for entry in data:
+                        try:
+                            dt = datetime.strptime(str(entry["date"])[:10], "%Y-%m-%d")
+                        except:
+                            dt = datetime.now()
+                        extracted_data.append({"date": dt, "text": entry["text"]})
+
+                    generate_parameter_graph(extracted_data, param_type)
+                    buffer = io.BytesIO()
+                    plt.savefig(buffer, format="png")
+                    buffer.seek(0)
+                    encoded_image = base64.b64encode(buffer.read()).decode("utf-8")
+                    buffer.close()
+                    plt.clf()
+
+                    graph_html = f"""
+                    <div class="card p-4 mb-4">
+                        <h4>{param_type.replace('_', ' ').title()} Trend Graph</h4>
+                        <img src="data:image/png;base64,{encoded_image}" class="img-fluid" alt="{param_type} Graph" />
+                    </div>
+                    """
+                    command_found = True
+                    break
+                except FileNotFoundError:
+                    graph_html = f"""
+                    <div class="card p-4 mb-4">
+                        <p>No historical data found to generate the {param_type.replace('_', ' ')} graph. Please upload past reports.</p>
+                    </div>
+                    """
+                    command_found = True # Indicate that a graph command was handled
+                    break
+                except Exception as e:
+                    graph_html = f"""
+                    <div class="card p-4 mb-4">
+                        <p>Error generating {param_type.replace('_', ' ')} graph: {e}</p>
+                    </div>
+                    """
+                    command_found = True # Indicate that a graph command was handled
+                    break
+
+
+    result_html += graph_html
+
     if highlighted_text:
         result_html += f"""
           <div class="card p-4 mb-4">
@@ -783,6 +1041,80 @@ async def get_ehr(patient_id: str):
     """
     return HTMLResponse(content=html_content)
 
+@app.post("/show_graph", response_class=HTMLResponse)
+async def show_graph(
+    graph_command: str = Form(""),
+    files: list[UploadFile] = File(None)
+):
+    if not graph_command and not files:
+        return HTMLResponse(content="<h3>Please provide a parameter or upload files to generate a graph.</h3>", status_code=400)
+
+    extracted_data = []
+    if files:
+        extracted_data = process_multiple_files(files)
+    elif os.path.exists("extracted_data.json"):
+        try:
+            with open("extracted_data.json", "r") as f:
+                data_from_json = json.load(f)
+                for entry in data_from_json:
+                    try:
+                        dt = datetime.strptime(str(entry["date"])[:10], "%Y-%m-%d")
+                    except:
+                        dt = datetime.now()
+                    extracted_data.append({"date": dt, "text": entry["text"]})
+        except Exception as e:
+            print(f"Error loading data from extracted_data.json: {e}")
+            # Continue even if loading fails, maybe new files were uploaded
+
+    if not extracted_data:
+         return HTMLResponse(content="<h3>No data available to generate a graph. Please upload reports first.</h3>", status_code=400)
+
+
+    # Determine which graph is requested
+    graph_commands = {
+        "diabetes": ["diabetes", "blood sugar", "glucose"],
+        "hba1c": ["hba1c", "a1c", "glycated hemoglobin"],
+        "blood_pressure": ["blood pressure", "bp", "systolic", "diastolic"]
+    }
+
+    requested_param_type = None
+    for param_type, keywords in graph_commands.items():
+        if any(keyword in graph_command.lower() for keyword in keywords):
+            requested_param_type = param_type
+            break
+
+    if not requested_param_type:
+        return HTMLResponse(content=f"<h3>Could not understand the request for '{graph_command}'. Please specify Diabetes, HbA1c, or Blood Pressure.</h3>", status_code=400)
+
+    try:
+        generate_parameter_graph(extracted_data, requested_param_type)
+        buffer = io.BytesIO()
+        plt.savefig(buffer, format="png")
+        buffer.seek(0)
+        encoded_image = base64.b64encode(buffer.read()).decode("utf-8")
+        buffer.close()
+        plt.clf()
+
+        graph_html = f"""
+        <div class="card p-4 mb-4">
+            <h4>{requested_param_type.replace('_', ' ').title()} Trend Graph</h4>
+            <img src="data:image/png;base64,{encoded_image}" class="img-fluid" alt="{requested_param_type} Graph" />
+        </div>
+        """
+
+        html_content = f"""
+        <html>
+            <head>
+                <link href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css" rel="stylesheet">
+                <style>
+                  body {{
+                    background: url("https://source.unsplash.com/1600x900/?hospital,medicine") no-repeat center center fixed;\n                    background-size: cover;\n                  }}\n                  .overlay {{\n                    background-color: rgba(255, 255, 255, 0.95);\n                    min-height: 100vh;\n                    padding: 30px;\n                  }}\n                </style>\n            </head>\n            <body>\n                <div class="overlay">\n                    <h1>Requested Parameter Graph</h1>\n                    {graph_html}\n                    <br><a href="/" class="btn btn-secondary">Go Back</a>\n                </div>\n            </body>\n        </html>\n        """
+        return HTMLResponse(content=html_content)
+
+    except Exception as e:
+        return HTMLResponse(content=f"<h3>Error generating graph: {e}</h3>", status_code=500)
+
+
 if __name__ == '__main__':
     import uvicorn
-    uvicorn.run("updated_code:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
